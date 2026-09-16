@@ -294,17 +294,6 @@ struct StatisticsView: View {
                         formatDuration: formatCompactDuration
                     )
 
-                    // 6. 在概览中恢复学习时段分布，让用户同时看到本期最早开始与最晚结束的时间。
-                    RhythmSection(
-                        hourlyDurations: engine.hourlyDurations,
-                        primaryTimeSlot: engine.primaryTimeSlot,
-                        earliestStudyStart: engine.earliestStudyStart,
-                        latestStudyEnd: engine.latestStudyEnd,
-                        chartDataGeneration: engine.filterComputationGeneration,
-                        formatDuration: formatCompactDuration,
-                        formatClock: formatClock
-                    )
-
                     RankingSection(
                         selectedDimension: $selectedDimension,
                         rankingEntries: engine.rankingEntries,
@@ -436,6 +425,22 @@ struct StatisticsView: View {
                         value: formatComparisonValue(engine.comparison),
                         subtitle: formatComparisonSubtitle(engine.comparison, range: selectedRange),
                         icon: "arrow.up.right",
+                        tint: AppDesign.leisurePurple
+                    )
+
+                    // 起止时间沿用当前周期的学习日志计算结果，和总学习时长保持同一统计口径。
+                    OverviewMetric(
+                        title: "最早开始",
+                        value: engine.earliestStudyStart.map(formatClock) ?? "--:--",
+                        subtitle: "本期最早开始学习",
+                        icon: "sunrise.fill",
+                        tint: AppDesign.successGreen
+                    )
+                    OverviewMetric(
+                        title: "最晚结束",
+                        value: engine.latestStudyEnd.map(formatClock) ?? "--:--",
+                        subtitle: "本期最晚结束学习",
+                        icon: "moon.stars.fill",
                         tint: AppDesign.leisurePurple
                     )
                 }
