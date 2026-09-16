@@ -294,6 +294,17 @@ struct StatisticsView: View {
                         formatDuration: formatCompactDuration
                     )
 
+                    // 6. 在概览中恢复学习时段分布，让用户同时看到本期最早开始与最晚结束的时间。
+                    RhythmSection(
+                        hourlyDurations: engine.hourlyDurations,
+                        primaryTimeSlot: engine.primaryTimeSlot,
+                        earliestStudyStart: engine.earliestStudyStart,
+                        latestStudyEnd: engine.latestStudyEnd,
+                        chartDataGeneration: engine.filterComputationGeneration,
+                        formatDuration: formatCompactDuration,
+                        formatClock: formatClock
+                    )
+
                     RankingSection(
                         selectedDimension: $selectedDimension,
                         rankingEntries: engine.rankingEntries,
