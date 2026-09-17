@@ -1584,6 +1584,11 @@ final class StatisticsEngine {
         }
     }
 
+    /// 将快捷周期的参考日期恢复为当前时间，避免历史翻页状态泄漏到当前周期。
+    func resetReferenceDate() {
+        referenceDate = Date()
+    }
+
     // MARK: - Private Helpers
 
     private func updatePaginationState(range: StatisticsRange, now: Date) {

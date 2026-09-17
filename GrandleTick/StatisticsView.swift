@@ -118,7 +118,12 @@ struct StatisticsView: View {
                 refreshRangeData()
             }
         }
-        .onChange(of: selectedRange) { _, _ in
+        .onChange(of: selectedRange) { _, newRange in
+            // 快捷周期始终表示当前自然周期，避免历史翻页留下的参考日期污染“今天/本周”等标题和数据。
+            if newRange != .all {
+                engine.resetReferenceDate()
+            }
+
             // 切换周期时先轻微淡出旧内容，新统计回写后再淡入。
             if !reduceMotion {
                 withAnimation(AppDesign.animationCurve) {
@@ -243,7 +248,7 @@ struct StatisticsView: View {
             HStack(spacing: 8) {
                 ForEach(StatisticsRange.allCases) { range in
                     Button(range.shortTitle) {
-                        selectedRange = range
+                        selectRange(range)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(
                         role: selectedRange == range ? .primary : .secondary,
@@ -501,6 +506,19 @@ struct StatisticsView: View {
         } else {
             refreshRangeData()
         }
+    }
+
+    private func selectRange(_ range: StatisticsRange) {
+        // 1. 状态变化会由 onChange 统一重置参考日期并刷新；这里只处理周期值确实变化的情况。
+        guard selectedRange == range else {
+            selectedRange = range
+            return
+        }
+
+        // 2. 重复点击当前快捷周期时不会触发 onChange，因此主动回到当前周期并重新加载数据。
+        guard range != .all else { return }
+        engine.resetReferenceDate()
+        refreshRangeData()
     }
 
     private func refreshFiltersOnly() {
