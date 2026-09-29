@@ -97,8 +97,6 @@ final class ActivityTracker {
             lastTrustCheckAt = now
         }
 
-        resetBrowserMetadata()
-
         // 3. 获取前台最上层应用，若获取不到则清理状态；若为 GrandleTick 自身（弹出菜单栏弹层场景）则保留上次状态不变。
         guard let activeApp = NSWorkspace.shared.frontmostApplication else {
             removeActiveAppObserver()
@@ -115,6 +113,7 @@ final class ActivityTracker {
         // 4. 辅助功能权限受阻时，向界面更新状态，提示开启辅助功能权限。
         if !cachedAccessibilityTrusted {
             removeActiveAppObserver()
+            resetBrowserMetadata()
             currentAppName = "权限受阻"
             currentWindowTitle = "需开启辅助功能权限"
             currentGroupedTitle = "需开启辅助功能权限"
@@ -272,6 +271,7 @@ final class ActivityTracker {
         forceRefresh: Bool,
         now: Date
     ) {
+        // 1. 用进程和原始标题标识本次读取，避免把旧标签页结果用于新页面。
         let refreshKey = BrowserURLRefreshKey(
             processId: processId,
             appName: appName,
@@ -280,6 +280,16 @@ final class ActivityTracker {
 
         if let prefetchedResult = prefetchedBrowserURLResults.removeValue(forKey: refreshKey) {
             lastBrowserURLRefreshAt = now
+            // 网址读取可能因浏览器忙碌或临时失去焦点而失败；同一页面已有可靠快照时，
+            // 保留其分类和统计身份，避免退回标题兜底后累计值反复跳到另一组记录。
+            // 新标题或新进程不能沿用旧快照，否则会把新视频错误归到原视频。
+            if prefetchedResult.url == nil,
+               let lastResolvedSnapshot,
+               lastResolvedSnapshot.processId == processId,
+               lastResolvedSnapshot.rawTitle == rawTitle {
+                applySnapshot(lastResolvedSnapshot)
+                return
+            }
             applyResolvedBrowserSnapshot(
                 appName: appName,
                 bundleId: bundleId,
@@ -290,7 +300,7 @@ final class ActivityTracker {
             return
         }
 
-        // 同一浏览器窗口/标签页（processId + rawTitle 均未变）的缓存快照始终可复用，
+        // 2. 同一浏览器窗口/标签页（processId + rawTitle 均未变）的缓存快照始终可复用，
         // 因为标题不变意味着用户没有切标签页或导航到新页面。
         // forceRefresh 只决定是否在后台重新获取 URL，不应丢弃已解析的有效快照——
         // 否则会短暂发布 browserUrl=nil 的兜底状态，导致白名单域名识别失败，
@@ -307,7 +317,7 @@ final class ActivityTracker {
             return
         }
 
-        // 新标签页和标题变化以前会在主线程同步执行 AppleScript，最慢时会冻结整个 SwiftUI 界面。
+        // 3. 新标签页和标题变化以前会在主线程同步执行 AppleScript，最慢时会冻结整个 SwiftUI 界面。
         // 先根据窗口标题发布轻量兜底状态，再由 utility 任务读取 URL 并回到主线程修正结果。
         scheduleBrowserURLRefresh(for: refreshKey)
         applyResolvedBrowserSnapshot(
