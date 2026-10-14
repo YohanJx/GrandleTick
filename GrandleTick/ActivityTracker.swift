@@ -1,6 +1,5 @@
 import AppKit
 import SwiftData
-import CryptoKit
 
 struct BrowserTitleData {
     let displayTitle: String
@@ -725,18 +724,25 @@ final class ActivityTracker {
         guard let firstChunk = try? fileHandle.read(upToCount: chunkSize) else {
             return inodeString.isEmpty ? nil : inodeString
         }
-        let firstHash = SHA256.hash(data: firstChunk).description.prefix(12)
+        // 必须编码摘要字节；description 以固定的 “SHA256 digest:” 开头，截取它会让同大小文件指纹相同。
+        let firstHash = PDFIdentifier.contentHash(firstChunk)
         
+        // 3. 定位尾部后再读取；定位失败时不能把当前位置的数据误当成尾部指纹。
         if fileSize > UInt64(chunkSize) {
-            try? fileHandle.seek(toOffset: fileSize - UInt64(chunkSize))
+            guard (try? fileHandle.seek(toOffset: fileSize - UInt64(chunkSize))) != nil else {
+                return inodeString.isEmpty ? nil : inodeString
+            }
         } else {
-            try? fileHandle.seek(toOffset: 0)
+            guard (try? fileHandle.seek(toOffset: 0)) != nil else {
+                return inodeString.isEmpty ? nil : inodeString
+            }
         }
         guard let lastChunk = try? fileHandle.read(upToCount: chunkSize) else {
             return inodeString.isEmpty ? nil : inodeString
         }
-        let lastHash = SHA256.hash(data: lastChunk).description.prefix(12)
+        let lastHash = PDFIdentifier.contentHash(lastChunk)
         
+        // 4. 大小与首尾内容共同构成身份，保留复制和重命名后的稳定性。
         return "pdf_\(fileSize)_\(firstHash)_\(lastHash)"
     }
 

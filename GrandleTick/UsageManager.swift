@@ -661,7 +661,19 @@ final class UsageManager {
             })
             let identifiedLogs = (try? context.fetch(identifiedDescriptor)) ?? []
             let legacyLogs = (try? context.fetch(legacyDescriptor)) ?? []
-            matchingLogs = identifiedLogs + legacyLogs
+            // 旧版本把摘要说明文字当成哈希，历史标识实际只区分文件大小。
+            // 继续只读累加原先属于该旧标识的记录，避免修复哈希后历史累计归零；
+            // 新记录仍使用真实内容指纹，不改写旧记录，也不按文件名合并现代 PDF。
+            let oldFormatLogs: [ActivityLog]
+            if let oldIdentifier = PDFIdentifier.legacyIdentifier(for: pdfId) {
+                let oldDescriptor = FetchDescriptor<ActivityLog>(predicate: #Predicate { log in
+                    log.pdfIdentifier == oldIdentifier
+                })
+                oldFormatLogs = (try? context.fetch(oldDescriptor)) ?? []
+            } else {
+                oldFormatLogs = []
+            }
+            matchingLogs = identifiedLogs + legacyLogs + oldFormatLogs
         } else if let bilibiliIdentifier = identity.bilibiliIdentifier, !bilibiliIdentifier.isEmpty {
             // 2. 知识视频直接按 BV 号汇总，使同一视频在不同浏览器中打开或标题变化后仍连续累计。
             let descriptor = FetchDescriptor<ActivityLog>(predicate: #Predicate { log in
