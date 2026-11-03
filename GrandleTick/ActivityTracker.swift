@@ -482,7 +482,7 @@ final class ActivityTracker {
         pendingBrowserURLRefreshKeys.insert(refreshKey)
 
         Task.detached(priority: .utility) {
-            let browserUrl = BrowserService.fetchActiveURL(for: refreshKey.appName)
+            let browserUrl = BrowserService.fetchActiveURL(processId: refreshKey.processId)
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
