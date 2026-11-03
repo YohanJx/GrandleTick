@@ -17,6 +17,18 @@ enum BrowserService {
         "com.duckduckgo.macos.browser"
     ]
 
+    static func isWebsiteActivity(appName: String, domain: String?) -> Bool {
+        // 1. 历史日志没有保存 bundle ID；已采集的域名可让系统默认浏览器同样进入网站分类。
+        if let domain, !domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        let name = appName.lowercased()
+        // 2. 保留旧版名称匹配，并补齐支持的浏览器；没有 URL 的记录仍按原有标题规则兜底。
+        return name.contains("safari") || name.contains("chrome") || name.contains("edge")
+            || ["chromium", "brave browser", "brave browser beta", "brave browser nightly",
+                "vivaldi", "opera", "opera gx", "opera air", "arc", "orion", "orion rc",
+                "firefox", "firefox developer edition", "firefox nightly", "nightly",
+                "zen", "zen browser", "duckduckgo"].contains(name)
+    }
+
     static func fetchActiveURL(processId: pid_t) -> String? {
         // 1. 仅访问仍在运行的目标进程，防止刷新任务意外启动已经退出的浏览器。
         guard let app = NSRunningApplication(processIdentifier: processId),

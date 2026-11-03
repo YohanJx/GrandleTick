@@ -814,7 +814,7 @@ final class UsageManager {
         bilibiliIdentifier: String?
     ) -> Bool {
         let lowercasedAppName = appName.lowercased()
-        let isWebsite = lowercasedAppName.contains("safari") || lowercasedAppName.contains("chrome") || lowercasedAppName.contains("edge")
+        let isWebsite = BrowserService.isWebsiteActivity(appName: appName, domain: domain)
 
         // 1. 黑名单优先校验：命中黑名单的应用或域名直接判定为娱乐/休闲活动。
         let isBlacklistedApp = WhitelistManager.shared.blacklistedApps.contains { app in
@@ -863,7 +863,7 @@ final class UsageManager {
         }
         
         let lowercasedAppName = log.appName.lowercased()
-        let isWebsite = lowercasedAppName.contains("safari") || lowercasedAppName.contains("chrome") || lowercasedAppName.contains("edge")
+        let isWebsite = BrowserService.isWebsiteActivity(appName: log.appName, domain: log.domain)
 
         // 2. 黑名单优先拦截：命中黑名单应用直接归入非学习（娱乐）。
         let isBlacklistedApp = whitelist.lowercasedBlacklistedApps.contains { app in

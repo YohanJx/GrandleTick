@@ -220,7 +220,7 @@ struct PreparedLog: Identifiable, Sendable {
         if log.windowTitle.contains("权限") || log.windowTitle.contains("未知") || log.appName.isEmpty { return nil }
         
         let lowercasedAppName = log.appName.lowercased()
-        let isWebsite = lowercasedAppName.contains("safari") || lowercasedAppName.contains("chrome") || lowercasedAppName.contains("edge")
+        let isWebsite = BrowserService.isWebsiteActivity(appName: log.appName, domain: log.domain)
         
         // 2. 解析域名。如果有域名，无论是否在白名单，均保留以支持网站统计与分类。
         let resolvedDomain = Self.resolveDomain(for: log, whitelist: whitelist)

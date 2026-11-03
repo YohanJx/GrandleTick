@@ -26,7 +26,7 @@ struct ContentView: View {
         let domain = usageManager.tracker.currentDomain
         
         let lowercasedAppName = appName.lowercased()
-        let isWebsite = lowercasedAppName.contains("safari") || lowercasedAppName.contains("chrome") || lowercasedAppName.contains("edge")
+        let isWebsite = BrowserService.isWebsiteActivity(appName: appName, domain: domain)
         
         // 1. 黑名单优先校验：命中黑名单的应用或域名直接判定为娱乐休闲状态。
         let isBlacklistedApp = WhitelistManager.shared.blacklistedApps.contains { app in
