@@ -8,6 +8,9 @@ enum BrowserService {
         let script: String
         if appName.contains("Safari") {
             script = "tell application \"Safari\" to return URL of front document"
+        } else if appName == "Chromium" {
+            // Chromium 使用独立的应用身份，不能向 Google Chrome 请求它的标签页。
+            script = "tell application \"Chromium\" to return URL of active tab of front window"
         } else if appName.contains("Chrome") {
             script = "tell application \"Google Chrome\" to return URL of active tab of front window"
         } else if appName.contains("Edge") {
@@ -41,6 +44,7 @@ enum BrowserService {
 
     // 2. 检查应用是否属于受支持的浏览器。
     static func isBrowserApp(bundleId: String) -> Bool {
-        bundleId.contains("Safari") || bundleId.contains("Chrome") || bundleId.contains("Edge")
+        // Chromium 的标识不包含 Chrome，必须显式识别才能进入域名采集流程。
+        bundleId == "org.chromium.Chromium" || bundleId.contains("Safari") || bundleId.contains("Chrome") || bundleId.contains("Edge")
     }
 }
