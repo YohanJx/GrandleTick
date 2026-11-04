@@ -153,62 +153,18 @@ struct AppCapsuleButtonStyle: ButtonStyle {
             .foregroundStyle(foreground)
             .frame(minHeight: compact ? 30 : AppDesign.controlHeight)
             .padding(.horizontal, compact ? 10 : 14)
-            .appControlSurface(
-                cornerRadius: AppDesign.controlCornerRadius,
-                fill: fill,
-                legacyFill: fill.opacity(configuration.isPressed ? 0.72 : 1),
-                fallbackScale: configuration.isPressed ? 0.985 : 1
+            .background(
+                RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius, style: .continuous)
+                    .fill(fill.opacity(configuration.isPressed ? 0.72 : 1))
             )
-    }
-}
-
-private struct AppControlSurface: ViewModifier {
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let cornerRadius: CGFloat
-    let fill: Color
-    let legacyFill: Color?
-    let fallbackScale: CGFloat
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
-        Group {
-            if #available(macOS 26, *) {
-                // 把原配色直接绘制在玻璃上方，避免浅色染色被材质冲淡；点击时不启用玻璃高光。
-                content
-                    .background(shape.fill(fill))
-                    .glassEffect(.regular, in: shape)
-                    .opacity(isEnabled ? 1 : 0.5)
-            } else {
-                content
-                    .background(shape.fill(legacyFill ?? fill))
-            }
-        }
-        // 让按钮整块可点击，避免更换材质后热区退回到图标和文字。
-        .contentShape(shape)
-        .scaleEffect(reduceMotion ? 1 : fallbackScale)
-        .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
+            .contentShape(RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(AppDesign.animationCurve, value: configuration.isPressed)
     }
 }
 
 extension View {
     func appPanel(_ variant: AppPanelVariant = .regular) -> some View {
         modifier(AppPanelModifier(variant: variant))
-    }
-
-    func appControlSurface(
-        cornerRadius: CGFloat,
-        fill: Color,
-        legacyFill: Color? = nil,
-        fallbackScale: CGFloat = 1
-    ) -> some View {
-        modifier(AppControlSurface(
-            cornerRadius: cornerRadius,
-            fill: fill,
-            legacyFill: legacyFill,
-            fallbackScale: fallbackScale
-        ))
     }
 }
