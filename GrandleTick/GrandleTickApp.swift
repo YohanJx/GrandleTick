@@ -162,13 +162,6 @@ final class StatusBarController: NSObject {
                 }
             )
                 .modelContext(modelContext)
-                .background {
-                    if #available(macOS 27, *) {
-                        // 弹层的系统材质会随窗口状态改变；给内容铺不透明底色，
-                        // 让卡片和按钮的半透明配色始终叠在同一背景上，且底色不参与内容入场动画。
-                        AppDesign.appBackground.ignoresSafeArea()
-                    }
-                }
         )
     }
 
@@ -272,9 +265,32 @@ final class StatusBarController: NSObject {
 
                 self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
                 self.popover.contentViewController?.view.window?.animationBehavior = .none
+                self.stabilizePopoverMaterial()
             }
             pendingPopoverPresentation = presentation
             DispatchQueue.main.async(execute: presentation)
+        }
+    }
+
+    private func stabilizePopoverMaterial() {
+        // 1. show 之后系统才创建弹层装饰视图，从内容的最外层祖先覆盖箭头和背景。
+        guard #available(macOS 27, *),
+              var root = popover.contentViewController?.view.window?.contentView else { return }
+        while let parent = root.superview {
+            root = parent
+        }
+
+        // 2. 只配置公开材质 API，让背景始终采用活跃外观，避免首次点击激活窗口时变白。
+        // 玻璃作为整个弹层的背景，不应响应内部按钮点击产生整面高光。
+        var pending = [root]
+        while let view = pending.popLast() {
+            if let material = view as? NSVisualEffectView {
+                material.state = .active
+            }
+            if let glass = view as? NSGlassEffectView {
+                glass.effectIsInteractive = false
+            }
+            pending.append(contentsOf: view.subviews)
         }
     }
 
