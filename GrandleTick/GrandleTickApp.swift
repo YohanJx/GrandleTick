@@ -263,34 +263,22 @@ final class StatusBarController: NSObject {
                 self.pendingPopoverPresentation = nil
                 guard !self.popover.isShown else { return }
 
+                // 4. 先请求应用激活，再展示弹层，避免第一次点击空白处才触发整面材质切换。
+                // 必须放在前台内容刷新之后；追踪器已有忽略本应用的规则，可延续原活动计时。
+                if #available(macOS 27, *) {
+                    NSApp.activate()
+                }
                 self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                self.popover.contentViewController?.view.window?.animationBehavior = .none
-                self.stabilizePopoverMaterial()
+                let popoverWindow = self.popover.contentViewController?.view.window
+                popoverWindow?.animationBehavior = .none
+
+                // 5. 应用激活和窗口成为键盘焦点是两个状态，弹层也要在首次绘制前取得焦点。
+                if #available(macOS 27, *) {
+                    popoverWindow?.makeKey()
+                }
             }
             pendingPopoverPresentation = presentation
             DispatchQueue.main.async(execute: presentation)
-        }
-    }
-
-    private func stabilizePopoverMaterial() {
-        // 1. show 之后系统才创建弹层装饰视图，从内容的最外层祖先覆盖箭头和背景。
-        guard #available(macOS 27, *),
-              var root = popover.contentViewController?.view.window?.contentView else { return }
-        while let parent = root.superview {
-            root = parent
-        }
-
-        // 2. 只配置公开材质 API，让背景始终采用活跃外观，避免首次点击激活窗口时变白。
-        // 玻璃作为整个弹层的背景，不应响应内部按钮点击产生整面高光。
-        var pending = [root]
-        while let view = pending.popLast() {
-            if let material = view as? NSVisualEffectView {
-                material.state = .active
-            }
-            if let glass = view as? NSGlassEffectView {
-                glass.effectIsInteractive = false
-            }
-            pending.append(contentsOf: view.subviews)
         }
     }
 
