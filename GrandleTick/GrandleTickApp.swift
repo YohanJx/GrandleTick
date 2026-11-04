@@ -162,6 +162,13 @@ final class StatusBarController: NSObject {
                 }
             )
                 .modelContext(modelContext)
+                .background {
+                    if #available(macOS 27, *) {
+                        // 弹层的系统材质会随窗口状态改变；给内容铺不透明底色，
+                        // 让卡片和按钮的半透明配色始终叠在同一背景上，且底色不参与内容入场动画。
+                        AppDesign.appBackground.ignoresSafeArea()
+                    }
+                }
         )
     }
 
