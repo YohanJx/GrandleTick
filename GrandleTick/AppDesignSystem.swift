@@ -155,8 +155,8 @@ struct AppCapsuleButtonStyle: ButtonStyle {
             .padding(.horizontal, compact ? 10 : 14)
             .appControlSurface(
                 cornerRadius: AppDesign.controlCornerRadius,
-                tint: role == .secondary ? nil : fill,
-                fallbackFill: fill.opacity(configuration.isPressed ? 0.72 : 1),
+                fill: fill,
+                legacyFill: fill.opacity(configuration.isPressed ? 0.72 : 1),
                 fallbackScale: configuration.isPressed ? 0.985 : 1
             )
     }
@@ -167,8 +167,8 @@ private struct AppControlSurface: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let cornerRadius: CGFloat
-    let tint: Color?
-    let fallbackFill: Color
+    let fill: Color
+    let legacyFill: Color?
     let fallbackScale: CGFloat
 
     func body(content: Content) -> some View {
@@ -176,13 +176,14 @@ private struct AppControlSurface: ViewModifier {
 
         Group {
             if #available(macOS 26, *) {
-                // 保留玻璃材质，避免系统的交互高光在点击时改变按钮亮度。
+                // 把原配色直接绘制在玻璃上方，避免浅色染色被材质冲淡；点击时不启用玻璃高光。
                 content
-                    .glassEffect(.regular.tint(tint), in: shape)
+                    .background(shape.fill(fill))
+                    .glassEffect(.regular, in: shape)
                     .opacity(isEnabled ? 1 : 0.5)
             } else {
                 content
-                    .background(shape.fill(fallbackFill))
+                    .background(shape.fill(legacyFill ?? fill))
             }
         }
         // 让按钮整块可点击，避免更换材质后热区退回到图标和文字。
@@ -199,14 +200,14 @@ extension View {
 
     func appControlSurface(
         cornerRadius: CGFloat,
-        tint: Color?,
-        fallbackFill: Color,
+        fill: Color,
+        legacyFill: Color? = nil,
         fallbackScale: CGFloat = 1
     ) -> some View {
         modifier(AppControlSurface(
             cornerRadius: cornerRadius,
-            tint: tint,
-            fallbackFill: fallbackFill,
+            fill: fill,
+            legacyFill: legacyFill,
             fallbackScale: fallbackScale
         ))
     }

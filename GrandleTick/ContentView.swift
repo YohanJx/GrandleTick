@@ -376,8 +376,7 @@ private struct BreakTimerIconButton: View {
                     .frame(width: 30, height: 30)
                     .appControlSurface(
                         cornerRadius: 7,
-                        tint: isScheduled ? AppDesign.successGreen.opacity(0.12) : nil,
-                        fallbackFill: isScheduled
+                        fill: isScheduled
                             ? AppDesign.successGreen.opacity(isHovered ? 0.18 : 0.12)
                             : Color.primary.opacity(isHovered ? 0.10 : 0.055)
                     )
@@ -536,8 +535,7 @@ private struct ActionCapsuleButton: View {
             .padding(.vertical, 10)
             .appControlSurface(
                 cornerRadius: AppDesign.controlCornerRadius,
-                tint: tint.opacity(0.08),
-                fallbackFill: tint.opacity(isHovered ? 0.14 : 0.08),
+                fill: tint.opacity(isHovered ? 0.14 : 0.08),
                 fallbackScale: isHovered ? 1.01 : 1
             )
         }
