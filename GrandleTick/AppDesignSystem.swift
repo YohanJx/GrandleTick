@@ -174,27 +174,21 @@ private struct AppControlSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-        // 交互反馈在 macOS 27 才适用于 Mac；减少动态效果或按钮禁用时只显示材质。
         Group {
-            if #available(macOS 27, *) {
-                content
-                    .glassEffect(.regular.tint(tint).interactive(isEnabled && !reduceMotion), in: shape)
-                    .opacity(isEnabled ? 1 : 0.5)
-            } else if #available(macOS 26, *) {
+            if #available(macOS 26, *) {
+                // 保留玻璃材质，避免系统的交互高光在点击时改变按钮亮度。
                 content
                     .glassEffect(.regular.tint(tint), in: shape)
                     .opacity(isEnabled ? 1 : 0.5)
-                    .scaleEffect(reduceMotion ? 1 : fallbackScale)
-                    .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
             } else {
                 content
                     .background(shape.fill(fallbackFill))
-                    .scaleEffect(reduceMotion ? 1 : fallbackScale)
-                    .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
             }
         }
         // 让按钮整块可点击，避免更换材质后热区退回到图标和文字。
         .contentShape(shape)
+        .scaleEffect(reduceMotion ? 1 : fallbackScale)
+        .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
     }
 }
 
