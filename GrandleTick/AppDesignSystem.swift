@@ -153,18 +153,67 @@ struct AppCapsuleButtonStyle: ButtonStyle {
             .foregroundStyle(foreground)
             .frame(minHeight: compact ? 30 : AppDesign.controlHeight)
             .padding(.horizontal, compact ? 10 : 14)
-            .background(
-                RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius, style: .continuous)
-                    .fill(fill.opacity(configuration.isPressed ? 0.72 : 1))
+            .appControlSurface(
+                cornerRadius: AppDesign.controlCornerRadius,
+                tint: role == .secondary ? nil : fill,
+                fallbackFill: fill.opacity(configuration.isPressed ? 0.72 : 1),
+                fallbackScale: configuration.isPressed ? 0.985 : 1
             )
-            .contentShape(RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(AppDesign.animationCurve, value: configuration.isPressed)
+    }
+}
+
+private struct AppControlSurface: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let cornerRadius: CGFloat
+    let tint: Color?
+    let fallbackFill: Color
+    let fallbackScale: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        // 交互反馈在 macOS 27 才适用于 Mac；减少动态效果或按钮禁用时只显示材质。
+        Group {
+            if #available(macOS 27, *) {
+                content
+                    .glassEffect(.regular.tint(tint).interactive(isEnabled && !reduceMotion), in: shape)
+                    .opacity(isEnabled ? 1 : 0.5)
+            } else if #available(macOS 26, *) {
+                content
+                    .glassEffect(.regular.tint(tint), in: shape)
+                    .opacity(isEnabled ? 1 : 0.5)
+                    .scaleEffect(reduceMotion ? 1 : fallbackScale)
+                    .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
+            } else {
+                content
+                    .background(shape.fill(fallbackFill))
+                    .scaleEffect(reduceMotion ? 1 : fallbackScale)
+                    .animation(reduceMotion ? nil : AppDesign.animationCurve, value: fallbackScale)
+            }
+        }
+        // 让按钮整块可点击，避免更换材质后热区退回到图标和文字。
+        .contentShape(shape)
     }
 }
 
 extension View {
     func appPanel(_ variant: AppPanelVariant = .regular) -> some View {
         modifier(AppPanelModifier(variant: variant))
+    }
+
+    func appControlSurface(
+        cornerRadius: CGFloat,
+        tint: Color?,
+        fallbackFill: Color,
+        fallbackScale: CGFloat = 1
+    ) -> some View {
+        modifier(AppControlSurface(
+            cornerRadius: cornerRadius,
+            tint: tint,
+            fallbackFill: fallbackFill,
+            fallbackScale: fallbackScale
+        ))
     }
 }

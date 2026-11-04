@@ -374,15 +374,13 @@ private struct BreakTimerIconButton: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(isScheduled ? AppDesign.successGreen : AppDesign.secondaryText)
                     .frame(width: 30, height: 30)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(
-                                isScheduled
-                                    ? AppDesign.successGreen.opacity(isHovered ? 0.18 : 0.12)
-                                    : Color.primary.opacity(isHovered ? 0.10 : 0.055)
-                            )
+                    .appControlSurface(
+                        cornerRadius: 7,
+                        tint: isScheduled ? AppDesign.successGreen.opacity(0.12) : nil,
+                        fallbackFill: isScheduled
+                            ? AppDesign.successGreen.opacity(isHovered ? 0.18 : 0.12)
+                            : Color.primary.opacity(isHovered ? 0.10 : 0.055)
                     )
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
                 if isScheduled {
                     Circle()
@@ -536,12 +534,12 @@ private struct ActionCapsuleButton: View {
             .foregroundColor(tint)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius)
-                    .fill(tint.opacity(isHovered ? 0.14 : 0.08))
+            .appControlSurface(
+                cornerRadius: AppDesign.controlCornerRadius,
+                tint: tint.opacity(0.08),
+                fallbackFill: tint.opacity(isHovered ? 0.14 : 0.08),
+                fallbackScale: isHovered ? 1.01 : 1
             )
-            .contentShape(RoundedRectangle(cornerRadius: AppDesign.controlCornerRadius))
-            .scaleEffect(isHovered ? 1.01 : 1)
         }
         .buttonStyle(.plain)
         .focusable(false)
