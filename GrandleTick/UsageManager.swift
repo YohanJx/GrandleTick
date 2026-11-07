@@ -13,6 +13,7 @@ final class UsageManager {
     var menuBarTitleDidChange: ((String) -> Void)?
 
     private var displayTimer: Timer?
+    private var displayedDayStart = Calendar.current.startOfDay(for: Date())
     private var activityTransitionTimer: Timer?
     private var untrackedDisplayTimer: Timer?
     private var pendingActivityTransition: PendingActivityTransition?
@@ -62,7 +63,11 @@ final class UsageManager {
     }
 
     func flushPendingSession() {
-        persistCurrentSession(forceSave: true, endDate: Date())
+        let now = Date()
+        splitSessionAtDayBoundaries(until: now, calendar: .current)
+        // 恰好在零点刷新时，新日会话还没有可落库的时长，需要保留它继续计时。
+        guard currentSessionDuration(until: now) > 0 else { return }
+        persistCurrentSession(forceSave: true, endDate: now)
     }
 
     // 清空数据库后重新建立当前会话，避免下一次计时心跳把清空前的历史基准带回界面。
@@ -87,24 +92,40 @@ final class UsageManager {
     }
 
     // 1. 处理纯展示计时器。
-    // 每秒只根据当前会话的两个时间戳派生展示值，不访问辅助功能，也不重新识别前台窗口。
+    // 使用现有会话刷新显示和处理跨日，不访问辅助功能，也不重新识别前台窗口。
     private func handleDisplayTick(at now: Date) {
-        // 1. 防抖确认期间仍按候选窗口的历史基准刷新界面，让用户从切入窗口的第一帧就看到正确累计值。
+        // 1. 先按本地日期结算跨日会话，等当天日志更新后再通知已打开的今日总结。
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: now)
+        let dayChanged = displayedDayStart != dayStart
+        displayedDayStart = dayStart
+        splitSessionAtDayBoundaries(until: now, calendar: calendar)
+        defer {
+            if dayChanged {
+                NotificationCenter.default.post(name: .todaySummaryShouldRefresh, object: nil)
+            }
+        }
+
+        // 2. 防抖确认期间仍按候选窗口的历史基准刷新界面，让用户从切入窗口的第一帧就看到正确累计值。
         if currentSession == nil, pendingActivityTransition != nil {
             updatePendingDisplayedDurations(at: now)
             return
         }
 
-        // 2. 当前没有可统计对象时只刷新菜单栏，避免把空窗口或未授权状态计入时长。
+        // 3. 没有可统计对象时不累计时长。跨日时也清除防抖期间可能冻结的昨日数值。
         guard currentSession != nil else {
-            publishMenuBarTitle()
+            if dayChanged {
+                setDisplayedDurations(currentActivityToday: 0, categoryToday: 0, contentHistorical: 0)
+            } else {
+                publishMenuBarTitle()
+            }
             return
         }
 
-        // 3. 展示值由当前时刻减会话开始时刻派生出来，计时精度与 Timer 实际触发时刻无关。
+        // 4. 展示值由当前时刻减会话开始时刻派生出来，计时精度与 Timer 实际触发时刻无关。
         updateDisplayedDurations(at: now)
 
-        // 4. 每分钟更新一次当前日志仅用于崩溃恢复；正常窗口切换仍由事件路径立即结算并保存。
+        // 5. 每分钟更新一次当前日志仅用于崩溃恢复；正常窗口切换仍由事件路径立即结算并保存。
         if persistedLogNeedsCreation {
             createPersistedLog(endDate: now)
         } else if shouldPersistSession(at: now) {
@@ -115,6 +136,7 @@ final class UsageManager {
     // 2. 处理活动状态变更。
     // 每个系统事件都会进入这里；快速切窗通过候选会话过滤，而不是在事件入口直接丢弃。
     private func handleActivityChange(at now: Date) {
+        splitSessionAtDayBoundaries(until: now, calendar: .current)
         let trackedActivity = TrackedActivity(from: tracker)
 
         // 1. 当前统计身份未变化时，只同步 URL 等元数据，不打断已经连续运行的会话。
@@ -216,8 +238,13 @@ final class UsageManager {
             tagLegacyLogsWithIdentifier(appName: trackedActivity.appName, windowTitle: trackedActivity.groupedTitle, pdfIdentifier: pdfId)
         }
 
+        loadSessionBaselines(for: trackedActivity.identity, at: startDate)
+        updateDisplayedDurations(at: startDate)
+    }
+
+    private func loadSessionBaselines(for identity: SessionIdentity, at startDate: Date) {
         // 1. 加载当前具体活动的今日和历史基准，用于菜单栏展示。
-        let baseline = baselineDurations(for: trackedActivity.identity, now: startDate)
+        let baseline = baselineDurations(for: identity, now: startDate)
         currentBaselineTodayDuration = baseline.today
         currentBaselineHistoricalDuration = baseline.historical
 
@@ -225,9 +252,20 @@ final class UsageManager {
         let todayTotals = todayTotalDurations(now: startDate)
         todayBaselineStudyDuration = todayTotals.study
         todayBaselineEntertainmentDuration = todayTotals.entertainment
+    }
 
-        // 3. 触发第一次的显示值刷新。
-        updateDisplayedDurations(at: startDate)
+    private func splitSessionAtDayBoundaries(until now: Date, calendar: Calendar) {
+        // 1. 按日历查找每个零点，覆盖睡眠后跳过多个日期及夏令时导致的一天长短变化。
+        while var session = currentSession,
+              let day = calendar.dateInterval(of: .day, for: session.startDate),
+              day.end <= now {
+            // 2. 先结算旧日的日志，再沿用同一活动的元数据开启新日记录，保持内容历史累计连续。
+            persistCurrentSession(forceSave: true, endDate: day.end)
+            session.startDate = day.end
+            currentSession = session
+            currentPersistedLog = nil
+            loadSessionBaselines(for: session.identity, at: day.end)
+        }
     }
 
     private func queuePendingActivityTransition(
@@ -313,7 +351,9 @@ final class UsageManager {
             for: pendingActivityTransition.activity,
             at: pendingActivityTransition.observedAt
         )
-        updateDisplayedDurations(at: Date())
+        let now = Date()
+        splitSessionAtDayBoundaries(until: now, calendar: .current)
+        updateDisplayedDurations(at: now)
     }
 
     private func cancelPendingActivityTransition() {
@@ -440,7 +480,7 @@ final class UsageManager {
 
         // 数据库中的当前记录可能每分钟更新一次；缓存始终覆盖成“会话基准 + 当前总时长”，
         // 不能在每次保存时做增量相加，否则同一会话会被重复累计。
-        updateDurationCaches(for: currentSession, sessionDuration: finalDuration, at: endDate)
+        updateDurationCaches(for: currentSession, sessionDuration: finalDuration)
     }
 
     private func clearSessionState() {
@@ -489,12 +529,17 @@ final class UsageManager {
 
         // 1. 候选展示从真实切入时刻开始递增，防抖只延迟落库，不延迟用户看到计时。
         let duration = max(0, date.timeIntervalSince(pendingActivityTransition.observedAt))
-        let currentActivityToday = pendingActivityTransition.baseline.today + duration
+        // 防抖可跨过零点，今日展示只累加新日的部分，候选确认后才按原始切入时刻分段落库。
+        let dayStart = Calendar.current.startOfDay(for: date)
+        let sameDay = pendingActivityTransition.observedAt >= dayStart
+        let todayDuration = max(0, date.timeIntervalSince(max(dayStart, pendingActivityTransition.observedAt)))
+        let currentActivityToday = (sameDay ? pendingActivityTransition.baseline.today : 0) + todayDuration
 
         // 2. 今日分类总时长按候选窗口的分类口径选择对应基准，避免先显示 0 再跳到历史累计值。
-        let categoryToday = isStudyActivity(pendingActivityTransition.activity)
-            ? pendingActivityTransition.todayStudyDuration + duration
-            : pendingActivityTransition.todayEntertainmentDuration + duration
+        let categoryBaseline = isStudyActivity(pendingActivityTransition.activity)
+            ? pendingActivityTransition.todayStudyDuration
+            : pendingActivityTransition.todayEntertainmentDuration
+        let categoryToday = (sameDay ? categoryBaseline : 0) + todayDuration
 
         // 3. PDF 和知识视频在候选阶段同样展示内容级历史累计，正式会话建立后数值可无缝衔接。
         let contentHistorical = contentDurationLabel(for: pendingActivityTransition.activity) == nil
@@ -549,10 +594,10 @@ final class UsageManager {
 
     private func updateDurationCaches(
         for session: ActiveSession,
-        sessionDuration: TimeInterval,
-        at date: Date
+        sessionDuration: TimeInterval
     ) {
-        let dayStart = Calendar.current.startOfDay(for: date)
+        // 在零点结算的时长属于会话开始日，不能把旧日累计写进新日的缓存。
+        let dayStart = Calendar.current.startOfDay(for: session.startDate)
 
         // 1. 当前对象的缓存采用会话开始前基准加本次会话总时长，保证下次切回时无需重新查库。
         let baseline = DurationBaseline(
@@ -1006,7 +1051,7 @@ private struct TrackedActivity {
 
 private struct ActiveSession {
     let identity: SessionIdentity
-    let startDate: Date
+    var startDate: Date
     let appName: String
     let groupedTitle: String
     let domain: String?
