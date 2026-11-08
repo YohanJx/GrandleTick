@@ -68,7 +68,82 @@ struct ScreenPauseRegressionTests {
         manager.flushPendingSession()
         let finalLogs = try testLogs(container.mainContext)
         precondition(finalLogs.count == 2)
-        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消")
+
+        // 5. 验证统一分类器 ActivityClassifier 与 WhitelistCacheKey 黑白名单缓存键失效行为。
+        verifyActivityClassifierAndCacheKey()
+        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消、统一分类器与名单缓存键")
+    }
+
+    @MainActor
+    private static func verifyActivityClassifierAndCacheKey() {
+        let whitelist = WhitelistManager.shared
+        let savedWhiteApps = whitelist.whitelistedApps
+        let savedWhiteDomains = whitelist.whitelistedDomains
+        let savedBlackApps = whitelist.blacklistedApps
+        let savedBlackDomains = whitelist.blacklistedDomains
+        defer {
+            whitelist.whitelistedApps = savedWhiteApps
+            whitelist.whitelistedDomains = savedWhiteDomains
+            whitelist.blacklistedApps = savedBlackApps
+            whitelist.blacklistedDomains = savedBlackDomains
+        }
+
+        // 1. 黑名单变更必须使 WhitelistCacheKey 变化，防止今日学习/休闲汇总沿用旧缓存。
+        let initialKey = WhitelistCacheKey(whitelist: whitelist)
+        whitelist.blacklistedApps.append("__test_blacklist_app__")
+        let keyAfterBlackApp = WhitelistCacheKey(whitelist: whitelist)
+        precondition(initialKey != keyAfterBlackApp)
+        whitelist.blacklistedDomains.append("example-entertainment.com")
+        let keyAfterBlackDomain = WhitelistCacheKey(whitelist: whitelist)
+        precondition(keyAfterBlackApp != keyAfterBlackDomain)
+
+        // 2. 验证 B 站仅在存在 bilibiliIdentifier 时判定为学习，预览仅在查看 .pdf 时判定为学习。
+        let snapshot = WhitelistSnapshot(whitelist: whitelist)
+        precondition(
+            ActivityClassifier.isStudy(
+                appName: "Safari",
+                windowTitle: "线性代数",
+                domain: "bilibili.com",
+                bilibiliIdentifier: "BV1xx411c7mD",
+                whitelist: snapshot
+            )
+        )
+        precondition(
+            !ActivityClassifier.isStudy(
+                appName: "Safari",
+                windowTitle: "Bilibili",
+                domain: "bilibili.com",
+                bilibiliIdentifier: nil,
+                whitelist: snapshot
+            )
+        )
+        precondition(
+            ActivityClassifier.isStudy(
+                appName: "预览",
+                windowTitle: "量子力学.pdf",
+                domain: nil,
+                bilibiliIdentifier: nil,
+                whitelist: snapshot
+            )
+        )
+        precondition(
+            !ActivityClassifier.isStudy(
+                appName: "预览",
+                windowTitle: "截图.png",
+                domain: nil,
+                bilibiliIdentifier: nil,
+                whitelist: snapshot
+            )
+        )
+        precondition(
+            !ActivityClassifier.isStudy(
+                appName: "__test_blacklist_app__",
+                windowTitle: "测试窗口",
+                domain: nil,
+                bilibiliIdentifier: nil,
+                whitelist: snapshot
+            )
+        )
     }
 
     @MainActor

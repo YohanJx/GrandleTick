@@ -858,99 +858,34 @@ final class UsageManager {
         domain: String?,
         bilibiliIdentifier: String?
     ) -> Bool {
-        let lowercasedAppName = appName.lowercased()
-        let isWebsite = BrowserService.isWebsiteActivity(appName: appName, domain: domain)
-
-        // 1. 黑名单优先校验：命中黑名单的应用或域名直接判定为娱乐/休闲活动。
-        let isBlacklistedApp = WhitelistManager.shared.blacklistedApps.contains { app in
-            let lower = app.lowercased()
-            return lower == lowercasedAppName || lower.contains(lowercasedAppName) || lowercasedAppName.contains(lower)
-        }
-        let isBlacklistedDomain = domain.flatMap { d in
-            WhitelistManager.shared.blacklistedDomains.contains { $0.lowercased() == d.lowercased() }
-        } ?? false
-
-        if isBlacklistedApp || isBlacklistedDomain {
-            return false
-        }
-        
-        // 2. 如果是浏览器，校验域名是否在白名单内，并对 B 站进行特殊指纹校验。
-        if isWebsite {
-            guard let domain = domain else { return false }
-            let isWhitelistedDomain = WhitelistManager.shared.whitelistedDomains.contains { $0.lowercased() == domain.lowercased() }
-            
-            // B 站视频必须通过 API 确认为知识区得到的 identifier 作为唯一分类依据，避免 URL 兜底逻辑错误分类。
-            if domain == "bilibili.com" {
-                return bilibiliIdentifier != nil
-            }
-            
-            return isWhitelistedDomain
-        } 
-        
-        // 3. 如果是 PDF 查看器，校验是否正在查看 PDF 文件。
-        if lowercasedAppName.contains("预览") || lowercasedAppName.contains("preview") {
-            return windowTitle.lowercased().contains(".pdf")
-        } 
-        
-        // 4. 其它本地应用匹配应用白名单。
-        return WhitelistManager.shared.whitelistedApps.contains { app in
-            let lowercasedApp = app.lowercased()
-            return lowercasedApp == lowercasedAppName || lowercasedApp.contains(lowercasedAppName) || lowercasedAppName.contains(lowercasedApp)
-        }
+        // 统一委托给 ActivityClassifier 判定，保证实时弹窗、会话管理与统计引擎口径完全一致。
+        ActivityClassifier.isStudy(
+            appName: appName,
+            windowTitle: windowTitle,
+            domain: domain,
+            bilibiliIdentifier: bilibiliIdentifier,
+            whitelist: .shared,
+            resolveDomainFromTitle: false
+        )
     }
 
     // 2. 用于评估数据库历史记录中的某条日志是否属于学习分类。
     // 在读取今天已落库的所有日志累加今日总时长时使用此方法。
     private func isStudyLog(_ log: ActivityLog, whitelist: WhitelistSnapshot) -> Bool {
         // 1. 过滤掉无意义的系统权限提示或未知/无效空日志。
-        if log.windowTitle.contains("权限") || log.windowTitle.contains("未知") || log.appName.isEmpty {
+        if ActivityClassifier.isInvalidLog(appName: log.appName, windowTitle: log.windowTitle) {
             return false
         }
-        
-        let lowercasedAppName = log.appName.lowercased()
-        let isWebsite = BrowserService.isWebsiteActivity(appName: log.appName, domain: log.domain)
 
-        // 2. 黑名单优先拦截：命中黑名单应用直接归入非学习（娱乐）。
-        let isBlacklistedApp = whitelist.lowercasedBlacklistedApps.contains { app in
-            app == lowercasedAppName || app.contains(lowercasedAppName) || lowercasedAppName.contains(app)
-        }
-        if isBlacklistedApp {
-            return false
-        }
-        
-        // 3. 浏览器日志需要对白名单和 B 站专属标识进行校验。
-        if isWebsite {
-            let resolvedDomain: String?
-            if let domain = log.domain, !domain.isEmpty {
-                resolvedDomain = domain
-            } else {
-                let lowercasedWindowTitle = log.windowTitle.lowercased()
-                let allKeywords = whitelist.domainKeywords + whitelist.blacklistedDomainKeywords
-                resolvedDomain = allKeywords.first { entry in
-                    lowercasedWindowTitle.contains(entry.keyword) || (entry.keyword == "bilibili" && lowercasedWindowTitle.contains("哔哩哔哩"))
-                }?.domain
-            }
-            
-            guard let domain = resolvedDomain else { return false }
-            if whitelist.lowercasedBlacklistedDomainSet.contains(domain.lowercased()) {
-                return false
-            }
-            let isWhitelistedDomain = whitelist.lowercasedDomainSet.contains(domain.lowercased())
-            
-            if domain == "bilibili.com" {
-                return log.bilibiliIdentifier != nil
-            }
-            
-            return isWhitelistedDomain
-        } else if lowercasedAppName.contains("预览") || lowercasedAppName.contains("preview") {
-            // 4. PDF 校验。
-            return log.windowTitle.lowercased().contains(".pdf")
-        } else {
-            // 5. 应用白名单校验。
-            return whitelist.lowercasedApps.contains { app in
-                app == lowercasedAppName || app.contains(lowercasedAppName) || lowercasedAppName.contains(app)
-            }
-        }
+        // 2. 复用统一分类器，并对缺少显式 domain 的旧日志启用窗口标题关键词兜底解析。
+        return ActivityClassifier.isStudy(
+            appName: log.appName,
+            windowTitle: log.windowTitle,
+            domain: log.domain,
+            bilibiliIdentifier: log.bilibiliIdentifier,
+            whitelist: whitelist,
+            resolveDomainFromTitle: true
+        )
     }
 
     // 3. 从数据库加载今天所有已落库的学习和娱乐总时长。
@@ -1028,7 +963,9 @@ private struct TrackedActivity {
 
     @MainActor
     init?(from tracker: ActivityTracker) {
-        guard !tracker.currentAppName.isEmpty, !tracker.currentAppName.contains("权限受阻") else {
+        guard !tracker.currentAppName.isEmpty,
+              !tracker.isAccessibilityPermissionBlocked,
+              !tracker.currentAppName.contains("权限受阻") else {
             return nil
         }
 
@@ -1086,16 +1023,6 @@ private struct TodayCategoryDurationCache {
     let whitelistKey: WhitelistCacheKey
     let study: TimeInterval
     let entertainment: TimeInterval
-}
-
-private struct WhitelistCacheKey: Equatable {
-    let apps: [String]
-    let domains: [String]
-
-    init(whitelist: WhitelistManager) {
-        apps = whitelist.whitelistedApps.map { $0.lowercased() }.sorted()
-        domains = whitelist.whitelistedDomains.map { $0.lowercased() }.sorted()
-    }
 }
 
 private struct DurationCacheCandidate {

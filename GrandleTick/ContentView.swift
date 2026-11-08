@@ -20,58 +20,16 @@ struct ContentView: View {
     /// 区分当前正在活跃的窗口是属于“学习专注”还是“娱乐休闲”
     private var isStudyActive: Bool {
         guard !isUntracked else { return false }
-        
-        let appName = usageManager.tracker.currentAppName
-        let windowTitle = usageManager.tracker.currentWindowTitle
-        let domain = usageManager.tracker.currentDomain
-        
-        let lowercasedAppName = appName.lowercased()
-        let isWebsite = BrowserService.isWebsiteActivity(appName: appName, domain: domain)
-        
-        // 1. 黑名单优先校验：命中黑名单的应用或域名直接判定为娱乐休闲状态。
-        let isBlacklistedApp = WhitelistManager.shared.blacklistedApps.contains { app in
-            let lower = app.lowercased()
-            return lower == lowercasedAppName || lower.contains(lowercasedAppName) || lowercasedAppName.contains(lower)
-        }
-        if isBlacklistedApp {
-            return false
-        }
-        if isWebsite, let domain {
-            let isBlacklistedDomain = WhitelistManager.shared.blacklistedDomains.contains {
-                $0.lowercased() == domain.lowercased()
-            }
-            if isBlacklistedDomain {
-                return false
-            }
-        }
 
-        // 2. 如果是浏览器，需要进一步校验域名是否在白名单内，并对 B 站做特殊处理。
-        if isWebsite {
-            guard let domain else { return false }
-            let isWhitelistedDomain = WhitelistManager.shared.whitelistedDomains.contains { $0.lowercased() == domain.lowercased() }
-            
-            // B 站视频必须以 bilibiliIdentifier 非空为唯一判断依据：
-            // - bilibiliIdentifier 只有在 API 确认为知识区（tidV2 在白名单中）时才会被赋值。
-            // - 当 URL 获取失败走窗口标题兜底路径时，identifier 为 nil，
-            //   此时 groupedTitle 可能是 "Bilibili" 而非 "娱乐"，不能用 groupedTitle 做判断，
-            //   必须直接以 identifier 为准，否则所有 B 站内容都会被误归为学习。
-            if domain == "bilibili.com" {
-                return usageManager.tracker.currentBilibiliId != nil
-            }
-            
-            return isWhitelistedDomain
-        } 
-        
-        // 3. 如果是 macOS 预览 App，需要明确判断是否正在查看 PDF 文件以归为学习。
-        if lowercasedAppName.contains("预览") || lowercasedAppName.contains("preview") {
-            return windowTitle.lowercased().contains(".pdf")
-        } 
-        
-        // 4. 其他常规应用直接根据应用名称是否在白名单中来判断是否属于专注学习。
-        return WhitelistManager.shared.whitelistedApps.contains { app in
-            let lowercasedApp = app.lowercased()
-            return lowercasedApp == lowercasedAppName || lowercasedApp.contains(lowercasedAppName) || lowercasedAppName.contains(lowercasedApp)
-        }
+        // 统一复用 ActivityClassifier，与 UsageManager 和 StatisticsEngine 保持完全一致的分类口径。
+        return ActivityClassifier.isStudy(
+            appName: usageManager.tracker.currentAppName,
+            windowTitle: usageManager.tracker.currentWindowTitle,
+            domain: usageManager.tracker.currentDomain,
+            bilibiliIdentifier: usageManager.tracker.currentBilibiliId,
+            whitelist: .shared,
+            resolveDomainFromTitle: false
+        )
     }
     
     private var currentTitle: String {
@@ -102,7 +60,7 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 16) {
-            if usageManager.tracker.currentWindowTitle == "需开启辅助功能权限" {
+            if usageManager.tracker.isAccessibilityPermissionBlocked || usageManager.tracker.currentWindowTitle == "需开启辅助功能权限" {
                 Button(action: {
                     let accessibilitySettingsAddress = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
                     NSWorkspace.shared.open(accessibilitySettingsAddress)

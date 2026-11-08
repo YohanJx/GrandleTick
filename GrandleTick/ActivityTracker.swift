@@ -18,10 +18,11 @@ final class ActivityTracker {
     var currentBilibiliTidV2: Int? = nil
     var currentFullUrl: String? = nil
     var currentPdfIdentifier: String? = nil
+    private(set) var isAccessibilityPermissionBlocked: Bool = false
     var activityDidChange: (() -> Void)?
 
-    static var titleCache: [String: BrowserTitleData] = [:]
-    static var bilibiliIdToMainTitleCache: [String: String] = [:]
+    private static var titleCache: [String: BrowserTitleData] = [:]
+    private static var bilibiliIdToMainTitleCache: [String: String] = [:]
     private static var bilibiliMetadataCache: [String: BilibiliVideoMetadata] = [:]
 
     private var lastBrowserURLRefreshAt: Date = .distantPast
@@ -136,6 +137,7 @@ final class ActivityTracker {
         if !cachedAccessibilityTrusted {
             removeActiveAppObserver()
             resetBrowserMetadata()
+            isAccessibilityPermissionBlocked = true
             currentAppName = "权限受阻"
             currentWindowTitle = "需开启辅助功能权限"
             currentGroupedTitle = "需开启辅助功能权限"
@@ -770,6 +772,7 @@ final class ActivityTracker {
     }
 
     private func clearTrackedState() {
+        isAccessibilityPermissionBlocked = false
         currentAppName = ""
         currentWindowTitle = ""
         currentGroupedTitle = ""
@@ -781,6 +784,7 @@ final class ActivityTracker {
     func applySnapshot(_ snapshot: TrackedSnapshot) {
         // 异步解析完成时仍需核对暂停状态，旧页面结果不能把已暂停的统计恢复。
         guard systemActivityMonitor.isAvailable else { return }
+        isAccessibilityPermissionBlocked = false
         currentAppName = snapshot.appName
         currentWindowTitle = snapshot.displayTitle
         currentGroupedTitle = snapshot.groupedTitle
