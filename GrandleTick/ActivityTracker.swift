@@ -36,13 +36,29 @@ final class ActivityTracker {
     nonisolated(unsafe) private var activeAppObserver: AXObserver?
     nonisolated(unsafe) private var observedFocusedWindow: AXUIElement?
     private var lastPublishedActivity: PublishedActivityState?
+    private let systemActivityMonitor = SystemActivityMonitor()
 
     init() {
-        // 启动阶段只静默读取授权状态，避免签名变化或系统权限状态异常时反复弹出授权窗口。
+        // 1. 启动阶段只静默读取授权状态，避免签名变化或系统权限状态异常时反复弹出授权窗口。
         // 首次授权仍由界面的“前往开启辅助功能权限”按钮承接，确保提示来自用户主动操作。
         cachedAccessibilityTrusted = checkAccessibilityPermissions(prompt: false)
+
+        // 2. 把系统可交互状态接入原有会话切换路径，沿用既有的结算与候选防抖规则。
+        systemActivityMonitor.availabilityDidChange = { [weak self] available in
+            guard let self else { return }
+            if available {
+                self.track(forceRefresh: true)
+            } else {
+                // 熄屏不保证发生前台切换；主动发布空状态，让 UsageManager 立即结算并取消候选会话。
+                self.removeActiveAppObserver()
+                self.clearTrackedState()
+            }
+        }
+
+        // 3. 初次识别也经过系统状态检查，锁屏启动时不能沿用旧窗口开启会话。
         track(forceRefresh: true)
 
+        // 4. 保留应用切换时主动刷新权限的机制，暂停期间的事件由 track 入口统一拦截。
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -86,7 +102,14 @@ final class ActivityTracker {
     }
 
     func track(forceRefresh: Bool = false) {
-        // 1. 每次调用都来自应用切换、焦点窗口变化或标题变化事件，必须立即读取新状态。
+        // 1. 系统暂停优先于弹层保留快照和权限提示，防止后台 AX/网页回调重新启动熄屏会话。
+        guard systemActivityMonitor.isAvailable else {
+            removeActiveAppObserver()
+            clearTrackedState()
+            return
+        }
+
+        // 通过暂停检查后，每次应用切换、焦点窗口变化或标题变化事件都必须立即读取新状态。
         // 这里不能做时间节流，否则用户快速切窗时事件会被丢弃，导致旧会话被多记数秒。
         let now = Date()
 
@@ -755,7 +778,9 @@ final class ActivityTracker {
         publishActivityChangeIfNeeded()
     }
 
-    private func applySnapshot(_ snapshot: TrackedSnapshot) {
+    func applySnapshot(_ snapshot: TrackedSnapshot) {
+        // 异步解析完成时仍需核对暂停状态，旧页面结果不能把已暂停的统计恢复。
+        guard systemActivityMonitor.isAvailable else { return }
         currentAppName = snapshot.appName
         currentWindowTitle = snapshot.displayTitle
         currentGroupedTitle = snapshot.groupedTitle
@@ -791,7 +816,8 @@ private let activityTrackerAXObserverCallback: AXObserverCallback = { _, _, _, r
     }
 }
 
-private struct TrackedSnapshot {
+// 保持模块内可见，让内存数据库回归测试走真实的快照发布与会话结算路径。
+struct TrackedSnapshot {
     let processId: pid_t
     let appName: String
     let bundleId: String
