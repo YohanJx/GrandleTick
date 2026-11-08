@@ -71,7 +71,10 @@ struct ScreenPauseRegressionTests {
 
         // 5. 验证统一分类器 ActivityClassifier 与 WhitelistCacheKey 黑白名单缓存键失效行为。
         verifyActivityClassifierAndCacheKey()
-        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消、统一分类器与名单缓存键")
+
+        // 6. 验证 UsageManager 今日分类时长在黑名单变更后自动失效重算，以及拆分后的统计存储与引擎聚合正常。
+        try verifyUsageCategoryCacheAndStatisticsModules()
+        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消、统一分类器、名单缓存失效与统计引擎聚合")
     }
 
     @MainActor
@@ -144,6 +147,122 @@ struct ScreenPauseRegressionTests {
                 whitelist: snapshot
             )
         )
+    }
+
+    @MainActor
+    private static func verifyUsageCategoryCacheAndStatisticsModules() throws {
+        let whitelist = WhitelistManager.shared
+        let savedWhiteApps = whitelist.whitelistedApps
+        let savedWhiteDomains = whitelist.whitelistedDomains
+        let savedBlackApps = whitelist.blacklistedApps
+        let savedBlackDomains = whitelist.blacklistedDomains
+        defer {
+            whitelist.whitelistedApps = savedWhiteApps
+            whitelist.whitelistedDomains = savedWhiteDomains
+            whitelist.blacklistedApps = savedBlackApps
+            whitelist.blacklistedDomains = savedBlackDomains
+        }
+
+        // 1. 验证 UsageManager 在应用从白名单移入黑名单后，今日分类累计时长能立即失效重算而不沿用旧缓存。
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("GrandleTickVerify-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let sqliteURL = tempDir.appendingPathComponent("VerifyActivityData.sqlite")
+        let container = try ModelContainer(
+            for: ActivityLog.self,
+            configurations: ModelConfiguration(url: sqliteURL)
+        )
+        ActivityLogIndexInstaller.installIfNeeded(databaseURL: sqliteURL)
+        let context = container.mainContext
+
+        let now = Date()
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: now)
+        let yesterdayStart = calendar.date(byAdding: .day, value: -1, to: todayStart)!
+
+        // 插入一条今日已落库日志与一条昨日已结束自然日日志。
+        context.insert(ActivityLog(
+            appName: "TestStudyApp",
+            windowTitle: "章节一",
+            startTime: todayStart.addingTimeInterval(60),
+            duration: 300
+        ))
+        context.insert(ActivityLog(
+            appName: "预览",
+            windowTitle: "高等数学.pdf",
+            startTime: yesterdayStart.addingTimeInterval(3600),
+            duration: 600,
+            pdfIdentifier: "pdf_1024_abc_def"
+        ))
+        try context.save()
+
+        whitelist.whitelistedApps = ["TestStudyApp", "预览"]
+        whitelist.blacklistedApps = []
+
+        let manager = UsageManager(modelContext: context)
+        manager.tracker.applySnapshot(TrackedSnapshot(
+            processId: 0,
+            appName: "TestStudyApp",
+            bundleId: "test.study",
+            rawTitle: "章节二",
+            displayTitle: "章节二",
+            groupedTitle: "TestStudyApp",
+            domain: nil,
+            bilibiliIdentifier: nil,
+            bilibiliTidV2: nil,
+            fullUrl: nil,
+            pdfIdentifier: nil
+        ))
+        precondition(manager.isCurrentSessionStudy)
+        // 切入学习应用时，弹窗分类累计基准应包含今天已落库的 300 秒学习时长。
+        precondition(manager.currentCategoryTodayDuration >= 300)
+
+        // 将 TestStudyApp 加入黑名单后再次切入，缓存必须失效并转为休闲分类（不再把 300 秒计入学习）。
+        whitelist.addBlacklistApp("TestStudyApp")
+        manager.tracker.applySnapshot(TrackedSnapshot(
+            processId: 0,
+            appName: "OtherApp",
+            bundleId: "test.other",
+            rawTitle: "其他",
+            displayTitle: "其他",
+            groupedTitle: "OtherApp",
+            domain: nil,
+            bilibiliIdentifier: nil,
+            bilibiliTidV2: nil,
+            fullUrl: nil,
+            pdfIdentifier: nil
+        ))
+        precondition(!manager.isCurrentSessionStudy)
+        precondition(manager.currentCategoryTodayDuration >= 300)
+
+        // 2. 验证拆分后的 ActivityLogSnapshotStore、ActivityAggregateCacheStore 与 StatisticsEngine 聚合计算。
+        let snapshotWhitelist = WhitelistSnapshot(whitelist: whitelist)
+        let preparedLogs = ActivityAggregateCacheStore.fetchPreparedLogs(
+            databaseURL: sqliteURL,
+            interval: DateInterval(start: yesterdayStart, end: now.addingTimeInterval(10)),
+            whitelist: snapshotWhitelist,
+            calendar: calendar
+        ).filter { $0.appName == "TestStudyApp" || $0.appName == "预览" }
+        precondition(preparedLogs.count == 2)
+        precondition(preparedLogs.contains { $0.isPDF && $0.isStudy && $0.duration == 600 })
+        precondition(preparedLogs.contains { $0.appName == "TestStudyApp" && !$0.isStudy && $0.duration == 300 })
+
+        let engine = StatisticsEngine()
+        engine.baseRangeLogs = preparedLogs
+        engine.applyFilters(
+            searchText: "",
+            contentFilter: .all,
+            appFilter: nil,
+            domainFilter: nil,
+            dimension: .app,
+            range: .all
+        )
+        pumpRunLoop(for: 0.25)
+        precondition(engine.studyDuration == 600)
+        precondition(engine.entertainmentDuration == 300)
+        precondition(engine.pdfDuration == 600)
+        precondition(engine.activeDays == 1)
     }
 
     @MainActor
