@@ -74,7 +74,49 @@ struct ScreenPauseRegressionTests {
 
         // 6. 验证 UsageManager 今日分类时长在黑名单变更后自动失效重算，以及拆分后的统计存储与引擎聚合正常。
         try verifyUsageCategoryCacheAndStatisticsModules()
-        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消、统一分类器、名单缓存失效与统计引擎聚合")
+
+        // 7. 验证睡眠被亮屏打断（willSleep 后直接收到 screensDidWake）以及解锁后焦点延迟归还时的自动重试恢复计时。
+        try verifyDelayedWakeRecoveryAndAbortedSleep(manager: manager, context: container.mainContext)
+        print("PASS: 交错暂停原因、同步结算、暂停期间不累计、恢复不补算、候选会话取消、延迟焦点恢复、统一分类器、名单缓存失效与统计引擎聚合")
+    }
+
+    @MainActor
+    private static func verifyDelayedWakeRecoveryAndAbortedSleep(
+        manager: UsageManager,
+        context: ModelContext
+    ) throws {
+        // 1. 模拟系统进入睡眠准备（willSleep）与熄屏（screensDidSleep），随后用户直接唤醒屏幕（screensDidWake），
+        // 且 powerd 尚未补发 didWake。此时亮屏通知必须同步清除残留的 systemSleeping。
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+
+        var probeAttempts = 0
+        manager.tracker.testWakeRecoveryHandler = {
+            probeAttempts += 1
+            // 第 1 次为 T+0ms 同步检测（模拟 loginwindow 尚未完成 CPSBringNextToFront 焦点归还，窗口未就绪）；
+            // 第 2 次为 150ms 后的自动恢复重采样（模拟焦点已归还但系统未发 didActivateApplicationNotification）。
+            if probeAttempts >= 2 {
+                publishTestActivity(manager)
+            }
+        }
+        defer {
+            manager.tracker.testWakeRecoveryHandler = nil
+        }
+
+        // 2. 触发亮屏通知：T+0ms 时窗口尚未就绪，等待自动恢复任务在 150ms 后重采样并启动会话。
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        pumpRunLoop(for: 0.25)
+        precondition(probeAttempts == 2)
+        precondition(manager.tracker.currentAppName == "ScreenPauseRegressionTest")
+
+        // 3. 继续等待防抖确认完成并产生计时，验证无需人工点击即可自动恢复会话且不会重复触发多余探针。
+        pumpRunLoop(for: AppConfig.activityTransitionDebounceInterval + 0.35)
+        precondition( probeAttempts == 2 )
+        precondition(manager.currentWindowTodayDuration > 0)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        let logsAfterDelayedWake = try testLogs(context)
+        precondition(logsAfterDelayedWake.count == 3)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
     }
 
     @MainActor

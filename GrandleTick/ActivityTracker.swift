@@ -33,6 +33,9 @@ final class ActivityTracker {
     private var prefetchedBrowserURLResults: [BrowserURLRefreshKey: BrowserURLRefreshResult] = [:]
     private var pendingBilibiliMetadataRequests: Set<String> = []
     nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var screenParametersObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var wakeRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored var testWakeRecoveryHandler: (() -> Void)?
     private var observedProcessId: pid_t?
     nonisolated(unsafe) private var activeAppObserver: AXObserver?
     nonisolated(unsafe) private var observedFocusedWindow: AXUIElement?
@@ -48,12 +51,16 @@ final class ActivityTracker {
         systemActivityMonitor.availabilityDidChange = { [weak self] available in
             guard let self else { return }
             if available {
-                self.track(forceRefresh: true)
+                self.startWakeRecovery()
             } else {
-                // 熄屏不保证发生前台切换；主动发布空状态，让 UsageManager 立即结算并取消候选会话。
+                // 熄屏不保证发生前台切换；主动取消唤醒恢复任务并发布空状态，让 UsageManager 立即结算并取消候选会话。
+                self.cancelWakeRecovery()
                 self.removeActiveAppObserver()
                 self.clearTrackedState()
             }
+        }
+        systemActivityMonitor.recoveryEventDidFire = { [weak self] in
+            self?.startWakeRecovery()
         }
 
         // 3. 初次识别也经过系统状态检查，锁屏启动时不能沿用旧窗口开启会话。
@@ -71,13 +78,30 @@ final class ActivityTracker {
                 self?.refreshAccessibilityTrust()
             }
         }
+
+        // 5. 外接显示器在亮屏后常经历数十毫秒至数秒的显示参数重排（kCGSDisplayReconfigure），
+        // 重排完成时若当前尚未识别到有效窗口，立即触发恢复采样。
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.systemActivityMonitor.isAvailable, self.currentAppName.isEmpty else { return }
+                self.startWakeRecovery()
+            }
+        }
     }
 
     deinit {
-        // 1. 移除系统前台应用切换通知观察者。
+        // 1. 移除系统前台应用切换与显示器参数变更通知观察者，并取消唤醒重试任务。
         if let observer = activationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
+        if let observer = screenParametersObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        wakeRecoveryTask?.cancel()
         
         // 2. 释放 AXObserver 观察者，并从运行循环中移除关联的源，防止观察回调访问已被销毁的实例（野指针崩溃）。
         if let observer = activeAppObserver {
@@ -120,8 +144,9 @@ final class ActivityTracker {
             lastTrustCheckAt = now
         }
 
-        // 3. 获取前台最上层应用，若获取不到则清理状态；若为 GrandleTick 自身（弹出菜单栏弹层场景）则保留上次状态不变。
-        guard let activeApp = NSWorkspace.shared.frontmostApplication else {
+        // 3. 获取前台最上层应用（含解锁瞬间从 loginwindow 回退至菜单栏持有应用），
+        // 若获取不到则清理状态；若为 GrandleTick 自身（弹出菜单栏弹层场景）则保留上次状态不变。
+        guard let activeApp = resolvedActiveApplication() else {
             removeActiveAppObserver()
             clearTrackedState()
             return
@@ -538,8 +563,12 @@ final class ActivityTracker {
         // 只监听会影响“当前统计对象”的通知：
         // - 焦点窗口变化用于同一 App 内切文档/窗口；
         // - 主窗口变化覆盖部分 App 不触发 focusedWindowChanged 的情况。
-        AXObserverAddNotification(observer, appElement, kAXFocusedWindowChangedNotification as CFString, context)
-        AXObserverAddNotification(observer, appElement, kAXMainWindowChangedNotification as CFString, context)
+        let focusResult = AXObserverAddNotification(observer, appElement, kAXFocusedWindowChangedNotification as CFString, context)
+        let mainResult = AXObserverAddNotification(observer, appElement, kAXMainWindowChangedNotification as CFString, context)
+        guard focusResult == .success || focusResult == .notificationAlreadyRegistered ||
+              mainResult == .success || mainResult == .notificationAlreadyRegistered else {
+            return
+        }
 
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         observedProcessId = processId
@@ -784,6 +813,9 @@ final class ActivityTracker {
     func applySnapshot(_ snapshot: TrackedSnapshot) {
         // 异步解析完成时仍需核对暂停状态，旧页面结果不能把已暂停的统计恢复。
         guard systemActivityMonitor.isAvailable else { return }
+        if !snapshot.appName.isEmpty {
+            cancelWakeRecovery()
+        }
         isAccessibilityPermissionBlocked = false
         currentAppName = snapshot.appName
         currentWindowTitle = snapshot.displayTitle
@@ -795,6 +827,66 @@ final class ActivityTracker {
         currentPdfIdentifier = snapshot.pdfIdentifier
         lastResolvedSnapshot = snapshot
         publishActivityChangeIfNeeded()
+    }
+
+    private func startWakeRecovery() {
+        // 1. 先立即同步执行一次强制识别，若当前前台应用与 AX 窗口已就绪则零延迟恢复。
+        cancelWakeRecovery()
+        performWakeRecoveryStep()
+        guard systemActivityMonitor.isAvailable, currentAppName.isEmpty else { return }
+
+        // 2. 熄屏唤醒与解锁瞬间，loginwindow 常在发出通知后 10~250ms 才完成 CPSBringNextToFront
+        // 焦点交接与锁屏遮罩卸载，且外接显示器重排可持续数秒；由于归还给原菜单栏应用时系统不补发
+        // didActivateApplicationNotification，按递增间隔主动重采样，直至成功识别窗口或再次进入暂停。
+        let retryDelays: [TimeInterval] = [0.15, 0.25, 0.4, 0.7, 1.0, 1.5, 2.0]
+        wakeRecoveryTask = Task { @MainActor [weak self] in
+            for delay in retryDelays {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, !Task.isCancelled, self.systemActivityMonitor.isAvailable else { return }
+                guard self.currentAppName.isEmpty else {
+                    self.wakeRecoveryTask = nil
+                    return
+                }
+                self.performWakeRecoveryStep()
+                if !self.currentAppName.isEmpty {
+                    self.wakeRecoveryTask = nil
+                    return
+                }
+            }
+            self?.wakeRecoveryTask = nil
+        }
+    }
+
+    private func cancelWakeRecovery() {
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = nil
+    }
+
+    private func performWakeRecoveryStep() {
+        if let testWakeRecoveryHandler {
+            testWakeRecoveryHandler()
+        } else {
+            track(forceRefresh: true)
+        }
+    }
+
+    private func resolvedActiveApplication() -> NSRunningApplication? {
+        // 1. 优先读取系统当前最上层前台应用。
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
+            return NSWorkspace.shared.menuBarOwningApplication
+        }
+
+        // 2. 解锁通知发出后的数十毫秒内，loginwindow 尚未完成 CPSBringNextToFront 焦点归还，
+        // 此时 frontmostApplication 仍暂留为 loginwindow，但 CGSession 已处于未锁定状态。
+        // 回退读取 menuBarOwningApplication 可直接拿到熄屏前持有菜单栏的用户应用。
+        if frontmost.bundleIdentifier == "com.apple.loginwindow",
+           !SystemActivityMonitor.isSessionLocked(),
+           let menuBarApp = NSWorkspace.shared.menuBarOwningApplication,
+           menuBarApp.processIdentifier != frontmost.processIdentifier {
+            return menuBarApp
+        }
+
+        return frontmost
     }
 
     private func publishActivityChangeIfNeeded() {
